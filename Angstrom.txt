@@ -1,0 +1,442 @@
+Angstrom / BBB Development Notes
+
+BBB Serial Connections:
+    J1-1    Black
+    J1-4    Green
+    J1-5    White
+    NC      Red
+
+VM Setup
+    Added new 25 GB disk to Mint VM.  Mounted at /media/nriedel/Projects
+
+OE Setup:
+    Follow setup at http://www.openembedded.org/wiki/Getting_started
+        sudo apt-get install gawk wget git-core diffstat unzip texinfo gcc-multilib \
+           build-essential chrpath
+    Note: skipped SDL and xterm since not using graphical image
+
+    Try the OE Core standalone setup: http://www.openembedded.org/wiki/OE-Core_Standalone_Setup
+        git clone git://git.openembedded.org/openembedded-core oe-core
+        cd oe-core
+        git clone git://git.openembedded.org/bitbake bitbake
+            
+        git checkout dizzy
+        cd bitbake
+        git checkout 1.24
+        cd ..
+
+        source ./oe-init-build-env
+    
+    left local.conf defaulted to MACHINE qemux86.  Maybe run with runqemu qemux86 ??
+        bitbake core-image-minimal
+        
+    First try had error with sdl-config.  So removed the libsdl library stuff from local.conf.
+    Try again:
+        bitbake core-image-minimal
+        
+    OK, it build but qemu doesn't boot.  Looks like the flavor is set for graphical I/F, but I
+    disabled that stuff.  So we'll assume it's OK and go to the BBB stuff
+    
+BBB Angstrom build : http://derekmolloy.ie/building-angstrom-for-beaglebone-from-source/
+
+        git clone git://github.com/Angstrom-distribution/setup-scripts.git
+        cd setup-scripts
+        MACHINE=beaglebone ./oebb.sh config beaglebone
+    The first time fails complaining about /bin/sh being a symlink to dash.  Run it again and it works
+        MACHINE=beaglebone ./oebb.sh config beaglebone
+    
+        MACHINE=beaglebone ./oebb.sh update
+        
+        . environment-angstrom-v2013.12
+        bitbake systemd-image
+    
+    It failed with a problem from git.  Do:
+        git config --global user.email nriedel@serranosystems
+        git config --global user.name "Neal Riedel"
+        
+        bitbake systemd-image
+    
+    Completed successfully
+
+Build the SD Card Image
+    Can't mount the SD card from the Linux VM.  Doesn't even show up in "Removable Devices"
+    Got a USB SD card reader.  Didn't seem to connect to VM successfully with the SD card in it
+    Removed the SD card, eventually it  connected.
+    Insert the card and I can see the two partitions from Linux VM.
+
+        mv mkcard.txt mkcard.sh
+        sudo chmod a+x mkcard.sh
+        sudo ./mkcard.sh /dev/sdc 
+
+        cd /mnt
+        sudo mkdir boot
+        sudo mkdir Angstrom
+        sudo mount -t vfat /dev/sdc1 /mnt/boot
+        sudo mount /dev/sdc2 /mnt/Angstrom
+        
+    check that df -k looks good.
+    
+        cd /media/nriedel/Projects/bbb/setup-scripts/deploy/eglibc/images/beaglebone
+        sudo cp u-boot.img /mnt/boot
+        sudo cp MLO /mnt/boot
+        
+    Oops! No uImage file.  Make it from zImage:
+        sudo mkimage -A arm -O linux -T kernel -C none -a 0x80008000 -e 0x80008000 -n “Linux” -d ./zImage ./uImage
+        
+        mv uImage uImage.bin
+        sudo cp uImage.bin /mnt/boot/
+        sudo mv /mnt/boot/uImage.bin /mnt/boot/uImage
+    Not sure why we can't copy uImage directly, but it doesn't work.  copying uImage.bin does!
+        (srs: uImage.bin no longer exists in the 'deploy' directory. not sure why. maybe it was "mv"ed instead of "cp"ed
+              when I tried to run mkimage, system complained it didn't exist:
+                    The program 'mkimage' is currently not installed. You can install it by typing:
+                    sudo apt-get install u-boot-tools
+              so I did.
+        (srs: there is no uImage file on the BOOT partition of the sd card from neal. So I don't know why
+              I need to copy this file. It looks like u-boot is using the zImage file in the linux partition /boot )
+    
+    Format of the rootfs doesn't seem to match exactly.  Use:
+        sudo tar -xf Angstrom-systemd-image-eglibc-ipk-v2013.12-beaglebone.rootfs.tar.xz  -C /mnt/Angstrom/
+    not "-xzf"
+
+        (srs: sudo tar -xf Angstrom-systemd-image-eglibc-ipk-v2013.12-beaglebone.rootfs.tar.xz  -C /media/nriedel/root )
+    	( file doesn't exist, so I have no fucking idea what file to use. I'll use the one with the latest date:
+		( 	sudo tar -xf modules-beaglebone.tgz -C /media/nriedel/root )
+		( that didn't seem to work, try:
+			sudo tar -xf Cloud9-IDE-GNOME-beaglebone.tar.xz -C /media/nriedel/root )
+        ( that worked )
+
+        sudo umount /dev/sdc1
+        sudo umount /dev/sdc2
+    
+    Eject the disk, remove the SDC card, put it into BBB.  Hold boot button on power-on and  it boots!
+    
+Dealing with the SD Card
+    Better instructions for dealing with the SDC card here:
+        https://www.yoctoproject.org/downloads/bsps/daisy16/beaglebone
+    
+    ALL DONE AS ROOT:
+    Assuming SDC card is in /dev/sdc
+        fdisk -lu /dev/sdc
+    Maybe get rid of -l and actually format it?
+        mkfs.vfat -F 16 -n "boot" /dev/sdc1
+        mke2fs -j -L "root" /dev/sdc2
+    Eject the card & re-insert.  Mounted on /media/nriedel/BOOT and /media/nriedel/root
+    Copy the files in as described above
+        (srs: i.e., above in this file)
+
+====
+	srs 1/27/15 - creating a new card. It was 32GB, preformatted as fat32, single partition. so of course the instructions don't work.
+	was complaining that mkfs.vfat was creating too large a file system. Needed to remove the original partition, create two partitions,
+	one for fat and one for linux, and make sure the fat partition wasn't bigger than 4GB. It took a few tries... I finally used the
+	size value (3951MB) shown as the result of the fdisk -lu operation on https://www.yoctoproject.org/downloads/bsps/daisy16/beaglebone
+	for the size of the FAT partition. That worked.
+
+		fdisk /dev/sdb	- enter fdisk in menu mode.
+			d   -- to delete partition 1
+			n   -- to add a new partition. primary, partition 1, default for start, +3951M for size
+			n   -- to add a new partition, primary, partition 2, default for start, default for end
+			t   -- to change partition type for partition 1. Use 'c', for W95 FAT32 (LBA) (because that's what yocto had)
+			a   -- to change partition 1 to boot (toggle the boot flag)
+			w   -- save changes and exit
+ 	then do the mkfs.vfat and mke2fs commands as above (use sdb instead of sdc)
+====
+
+IP Keys Board U-BOOT
+    My build of Linux will boot from the SD Card (but eMMC is not working)
+    My build of u-boot will not boot from SD Card
+    
+    My build of Linux needed to fix some issues with initialization related to removal of eeprom.
+    Fixes in:
+        <u-boot> =
+            /media/nriedel/Projects/bbb/setup-scripts/build/tmp-angstrom_v2013_12-eglibc/work/beaglebone-angstrom-linux-gnueabi/u-boot-denx/2014.01-r0/git
+        <u-boot>/board/ti/am3335x/board.c
+                                  board.h
+                                  mux.h
+                                  README (srs: this file was also modified)
+
+    Added a new IP Keys board configuration.  Mostly the same as BBB, except : 
+        MPU Vdd set to 1.275V instead of 1.325
+        CPU Freq is set to correspond to efuse max setting.  BBB uses 1GHz regardless of the efuse setting
+
+    Changed the board name to AM335IPKY.  U-boot commands are using board name to determine which .dts file to load.
+        in file <u-boot>/include/configs/am335x_evm.h
+
+IP Keys Linux Kernel
+    Turn off cape support so it will not try to load infomation from EEPROM
+    
+        bitbake -c clean virtual/kernel
+        bitbake -c configure virtual/kernel
+        bitbake -c menuconfig virtual/kernel
+            Device Drivers->Misc Devices->Beaglebone cape support
+        bitbake -c compile -f virtual/kernel
+        bitbake virtual/kernel
+    No more capemgr trying to start up and failing to read eeprom!
+    Note:  The updated .config file is here:        /media/nriedel/Projects/bbb/setup-scripts/build/tmp-angstrom_v2013_12-eglibc/work/beaglebone-angstrom-linux-gnueabi/linux-mainline/3.8.13-r25z/package/usr/src/kernel/.config
+
+    Now need to configure device tree to support eMMC
+    
+        Experiment: change &mmc2 in am335x-boneblack.dts to status = "okay"
+        Try change in /media/nriedel/Projects/bbb/setup-scripts/build/tmp-angstrom_v2013_12-eglibc/work/beaglebone-angstrom-linux-gnueabi/linux-mainline/3.8.13-r25z/git/arch/arm/boot/dts
+        
+        Works OK! Can mount on /dev/mmcblk1p2 (root) and /dev/mmcblk1p1 (boot)
+        
+        Copied u-boot.img, MLO to boot partition (rename old ones and uEnv.txt).  Now boots updated uboot without holding down boot button
+        
+        The tar utility on the BBB does not support xz compression.  So decompress the FS on the host PC:
+            unxz < Angstrom-systemd-image-eglibc-ipk-v2013.12-beaglebone.rootfs.tar.xz > Angstrom-systemd-image-eglibc-ipk-v2013.12-beaglebone.rootfs.tar
+            sudo cp Angstrom-systemd-image-eglibc-ipk-v2013.12-beaglebone.rootfs.tar /media/nriedel/root/home/root/
+            umount /dev/sdc1
+            umount /dev/sdc2
+        Unmount the SD card and move it to the BBB.  Boot the BBB from the SD card and login.  Mount the MMC flash, erase partition 2 
+        and untar the root FS into it
+            cd /mnt
+            mkdir root
+            mount /dev/mmcblk1p2 /mnt/root
+            rm -rf /mnt/root
+            cd root
+            tar -xf ~/Angstrom-systemd-image-eglibc-ipk-v2013.12-beaglebone.rootfs.tar .
+            
+        Shutdown the BBB, remove SD card and power it up again.  SHould boot on eMMC.
+            
+        Copy root FS tarball to SD card:
+            sudo cp Angstrom-systemd-image-eglibc-ipk-v2013.12-beaglebone.rootfs.tar.xz /media/nriedel/root/home/root/
+        Boot from SD card (no need to hold down button)
+        
+
+Saving Kernel the updates:
+    .config file appears to come from : 
+        /media/nriedel/Projects/bbb/setup-scripts/sources/meta-beagleboard/common-bsp/recipes-kernel/linux/linux-mainline-3.8/beaglebone/defconfig
+    with some patches applied.  So save it:
+        mv /media/nriedel/Projects/bbb/setup-scripts/sources/meta-beagleboard/common-bsp/recipes-kernel/linux/linux-mainline-3.8/beaglebone/defconfig /media/nriedel/Projects/bbb/setup-scripts/sources/meta-beagleboard/common-bsp/recipes-kernel/linux/linux-mainline-3.8/beaglebone/defconfig.orig
+        
+        cp .config /media/nriedel/Projects/bbb/setup-scripts/sources/meta-beagleboard/common-bsp/recipes-kernel/linux/linux-mainline-3.8/beaglebone/defconfig
+        
+    
+Building the cloud9 image
+    
+    bitbake cloud9-gnome-image
+    
+    Updated the local.conf file to keep the intermediate files, and use 4 threads per process.
+===
+srs 1/29/15
+- actually looks like the 4 threads/process is commented out, and 4 bitbake processes are allowed instead.
+- also update local.conf before running bitbake cloud9-gnome-image for the first time, not the order
+  shown in these notes.
+- build failed around task #5000, bad checksum for "parted" package. Restarted build, picked up where it
+  left off, complained again about the checksum, but this time found the right one at another repository and
+  kept going.
+===
+        bitbake -c clean u-boot-denx
+        bitbake -f -c compile u-boot-denx
+    Merge in my changes to u-boot sources
+        bitbake -f -c compile u-boot-denx
+        
+    Turn off cape support so it will not try to load infomation from EEPROM
+    
+        bitbake -c clean virtual/kernel
+        bitbake -c configure virtual/kernel
+        bitbake -c menuconfig virtual/kernel
+            Device Drivers->Misc Devices->Beaglebone cape support
+        bitbake -c compile -f virtual/kernel
+        bitbake virtual/kernel
+       
+    change &mmc2 in am335x-boneblack.dts to status = "okay"
+        /media/nriedel/Projects/bbb/setup-scripts/build/tmp-angstrom_v2013_12-eglibc/work/beaglebone-angstrom-linux-gnueabi/linux-mainline/3.8.13-r25z/git/arch/arm/boot/dts    
+
+        bitbake -c compile -f virtual/kernel
+        bitbake virtual/kernel
+        
+        bitbake cloud9-gnome-image
+        
+        
+    Some trouble with getting the kernel installed in the /boot directory of the root FS.  
+	Resolved this using
+		bitbake -c install -f virtual/kernel
+		bitbake cloud9-gnome-image
+
+		
+Erase on-board MMC:
+	From WITHIN U-BOOT, run
+		mmc dev 1
+		mmc erase 0 500
+	This kills the boot partition, so can only boot from SD card
+
+===================================================================================================
+===== srs: git repositories =====
+===================================================================================================
+
+The initial bitbake process clones u-boot and kernel git repositories. So the initial bitbake process creates
+local git repositories for these trees. The repositories are in:
+
+ u-boot:
+  <top>/setup-scripts/build/tmp-angstrom_v2013_12-eglibc/work/beaglebone-angstrom-linux-gnueabi/u-boot-denx/2014.01-r0/git
+
+ linux:
+  <top>/setup-scripts/build/tmp-angstrom_v2013_12-eglibc/work/beaglebone-angstrom-linux-gnueabi/linux-mainline/3.8.13-r25z/git/
+
+In both cases, the bitbake cloud9-gnome-image recipe clones the repository, then does a checkout from a particular revision
+of the repository. The checkouts appear to be "orphan" checkouts that "detach the head". Then bitbake applies patches for
+the beagle bone black board. The BBB patches remain uncommitted.
+
+I am taking advantage of this to
+	- archive our changes for the IP Keys board
+	- setup to use git to generate patches for an IP Keys board recipe.
+
+I setup two repositories at git-hub:
+	repos:		u-boot			(https://github.com/serrano-ipkeys/u-boot)
+				linux			(https://github.com/serrano-ipkeys/linux)
+
+Here are the steps I did to push code to the github repositories:
+
+=====
+first
+=====
+cd /home/nriedel/srs-bbb/setup-scripts/
+. ./environment-angstrom-v2013.12
+bitbake cloud9-gnome-image
+
+==========
+for u-boot
+==========
+
+cd /home/nriedel/srs-bbb/setup-scripts/build/tmp-angstrom_v2013_12-eglibc/work/beaglebone-angstrom-linux-gnueabi/u-boot-denx/2014.01-r0/git
+
+git status -s                            -- see what's been modified
+git add -A                               -- added all inital bitbake mods and untracked files to staging area
+git reset HEAD .pc                       -- removed some untracked files from staging area
+git config --global core.editor vi       -- set the default editor for commit comments
+git commit                               -- committed initial bitbake mods to local repository (rev: d77f291)
+
+    !! NOTE: the HEAD is detached after bitbake, so mods were committed to an orphan branch !!
+    !! NOTE: the orphan branch is branched from b44bd2c, not the head of the master branch  !!
+
+    ****
+    use winmerge to merge Neal's archived u-boot IP Keys changes
+     <u-boot>/board/ti/am3335x/board.c
+                           board.h
+                           mux.h
+                           README
+    test u-boot on ipkeys board, ok. ready to push
+    ****
+
+git add -u                               -- added IP Keys mods to staging area
+git commit                               -- committed IP Keys mods to local repository (rev: a764d99)
+
+    !! NOTE: the HEAD is detached after bitbake, so mods were committed to an orphan branch !!
+    !!       it is the same orphan branch as the previous commit.                           !!
+    !! NOTE: the orphan branch is branched from b44bd2c, not the head of the master branch  !!
+
+git branch ipkeys_updates a764d99        -- create ipkeys_updates branch that has all the mods for the BBB and IP Keys boards
+git checkout ipkeys_updates              -- move to ipkeys_updates branch
+git branch -m ipkeys                     -- rename branch to ipkeys
+
+git remote add ipkeys https://github.com/serrano-ipkeys/u-boot.git   -- create a shortcut to the github repository
+git push -u ipkeys ipkeys                -- push the ipkeys branch to the repository
+
+
+=========
+for linux
+=========
+
+cd /home/nriedel/srs-bbb/setup-scripts/build/tmp-angstrom_v2013_12-eglibc/work/beaglebone-angstrom-linux-gnueabi/linux-mainline/3.8.13-r25z/git
+
+git config --global core.editor vi
+git config http.postBuffer 524288000
+git remote add ipkeys https://github.com/serrano-ipkeys/linux.git
+
+git add -A                               -- added all inital bitbake mods and untracked files to staging area
+git commit                               -- committed initial bitbake mods to local repository
+git log -2 --oneline                     -- get log for branch
+    6b751d4 Patches applied during initial bitbake of angstrom for beaglebone black board.
+    dbf932a Linux 3.8.13
+
+   !! NOTE: the HEAD is detached after bitbake, so mods were committed to an orphan branch                    !!
+   !! NOTE: the orphan branch is branched from dbf932a, which is Linux 3.8.13, the head of the master branch  !!
+
+git reflog                               -- show history
+
+    6b751d4 HEAD@{0}: commit: Patches applied during initial bitbake of angstrom for beaglebone black board.
+    dbf932a HEAD@{1}: checkout: moving from master to dbf932a9b316d5b29b3e220e5a30e7a165ad2992
+    26bc420b HEAD@{2}: clone: from /home/nriedel/srs-bbb/setup-scripts/sources/downloads/git2/git.kernel.org.pub.scm.linux.kernel.git.sta
+
+git branch ipkeys 6b751d4                -- create ipkeys branch that has all the mods for the BBB from the initial bitbake build
+git checkout ipkeys                      -- move HEAD to ipkeys branch
+git push -u ipkeys ipkeys                -- push to github repository
+ 
+
+==== other useful git commands ====
+git difftool -t meld --staged board/ti/am335x/README    -- look at diffs in README that have been added to staging area
+git difftool -t meld board/ti/am335x/README             -- look at diffs in README that have not been added to staging area
+git config --global core.editor vi                      -- set commit comment editor to vi
+git log -3 --oneline                                    -- show last 3 log entries for current branch, only one line of log
+git reflog                                              -- list what has been done
+git log --stat -1                                       -- show detailed list of most previous commit
+
+===================================================================================================
+=== srs: building device tree files
+===================================================================================================
+It takes a long time to go through the bitbake steps to rebuild the kernel and root file system,
+especially when you are only changing device tree files. The whole point of device tree files is that you
+don't have to recompile the kernel... It's much faster to just build the dtb file U-Boot is looking
+for, and then copy it to the root file system on the SD card.
+
+In our case, U-boot is looking for /root/boot/am335x-boneblack.dtb.
+
+(Note: <linux> =
+   setup-scripts/build/tmp-angstrom_v2013_12-eglibc/work/beaglebone-angstrom-linux-gnueabi/linux-mainline/3.8.13-r25z/git
+
+In the build tree, am335x-boneblack.dtb lives in:
+	<linux>/arch/arm/boot/dts
+
+The dtc compiler lives in:
+	<linux>/scripts/dtc
+It is not in the path.
+
+=== other tools, including fdtdump ===
+
+There are some other useful device tree tools that unfortunately do not get built when dtc is built.
+Rather than build them, I just installed the device-tree-compiler package:
+	sudo apt-get install device-tree-compiler
+which puts dtc and the other utilities in /usr/bin.
+(see https://packages.debian.org/sid/i386/device-tree-compiler/filelist )
+
+Of course, the version numbers for dtc didn't match... grr... so I renamed /usr/bin/dtc to /usr/bin/srs-dtc, then
+copied <linux>/scripts/dtc to /usr/bin. The other utilites aren't used by bitbake, and aren't even compiled.
+So I was able to use the fdtdump utility that I wanted, and it was also easier to run dtc since it's now in the path.
+
+To see contents of dtb files:
+	$ fdtdump
+
+=== build the dtb file ===
+
+To build the dtb file:
+	$ cd <linux>/arch/arm/boot/dts
+	$ dtc -I dts -O dtb -@ -o ./am335x-boneblack.dtb am335x-boneblack.dts
+
+See http://elinux.org/BeagleBone_and_the_3.8_Kernel#Cape_Manager_and_Device_Tree_Overlays.
+The definitive instructions for compiling the base board DTS file are actually found in
+https://raw.githubusercontent.com/serrano-ipkeys/linux/ipkeys/Documentation/devicetree/dt-object-internal.txt, 
+section 3.a. This linux kernel documentation has not made it into the mainline kernel repository yet,
+even though other documents in the mainline reference it. Also see
+http://events.linuxfoundation.org/sites/events/files/slides/dynamic-dt-elce14.pdf, p.14.
+
+I found this useful to compare the results of my compiles to the original results:
+(I cleverly saved the original dtb file in boneblack.orig.dtb)
+	$ fdtdump am335x-boneblack.orig.dtb > old.txt
+	$ fdtdump am335x-boneblack.dtb > me.txt
+	$ meld me.txt old.txt
+
+This actually helped me figure out I needed the -@ option before I found the dt-object-internel.txt reference.
+The @ sign is used for compiling device tree overlays which get loaded at run time. But you also have to use
+the @ sign when building the Flattened Device Tree that gets loaded at boot time by U-Boot.
+
+=== install the dtb file on the sd card ==
+Insert the SD card, then
+	sudo cp am335x-boneblack.dtb /media/nriedel/root/boot/
+or (if target is running)
+	scp am335x-boneblack.dtb root@192.168.1.21:/boot/am335x-boneblack.dtb
+	
+
+
+
